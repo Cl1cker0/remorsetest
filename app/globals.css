@@ -1,3 +1,64 @@
+/* Loading stays text-free visually, with status labels for screen readers. */
+.store-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(ellipse at center, #0002, #0009);
+}
+.loading-dots {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  animation: loading-orbit 1.15s linear infinite;
+}
+.loading-dots i {
+  position: absolute;
+  left: 43px;
+  top: 43px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff0099;
+  transform: rotate(calc(var(--dot-index) * 15deg)) translateY(-38px);
+  box-shadow: 0 0 10px rgba(255, 0, 153, 0.65);
+}
+@keyframes loading-orbit { to { transform: rotate(360deg); } }
+.skeleton-block {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid #ffffff08;
+  border-radius: 14px;
+  background: #170f15;
+}
+.skeleton-block::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 0, 153, 0.08) 37%, rgba(255, 183, 226, 0.34) 49%, rgba(255, 255, 255, 0.22) 52%, rgba(255, 0, 153, 0.08) 65%, transparent 80%);
+  transform: translateX(-110%);
+  animation: skeleton-sweep 1.35s ease-in-out infinite;
+  filter: drop-shadow(0 0 18px rgba(255, 0, 153, 0.2));
+  pointer-events: none;
+}
+.skeleton-gallery { aspect-ratio: 1.25; border-radius: 24px; }
+.skeleton-thumbs { display: flex; gap: 12px; margin-top: 18px; }
+.skeleton-thumbs > div { width: 80px; height: 70px; }
+.skeleton-info { display: flex; flex-direction: column; gap: 24px; padding-top: 12px; }
+.skeleton-title { height: 52px; width: 80%; }
+.skeleton-line { height: 18px; width: 55%; }
+.skeleton-price { height: 106px; }
+.skeleton-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.skeleton-options > div { height: 100px; }
+.skeleton-button { height: 54px; }
+.skeleton-review-heading { width: min(420px, 75%); height: 48px; margin: 0 auto 40px; }
+@keyframes skeleton-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(110%); }
+}
 :root {
   color-scheme: dark;
   --bg: #0c090b;
@@ -16,6 +77,13 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 110px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 body {
   margin: 0;
@@ -139,28 +207,47 @@ a {
   flex-shrink: 0;
 }
 .brand-domain {
-  color: #b7b0b5;
-  font-weight: 450;
+  color: #ef69b9;
+  font-weight: 600;
 }
-.brand-symbol {
+.brand-logo-shell {
+  position: relative;
+  isolation: isolate;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 105, 194, 0.2);
+  border-radius: 12px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 0, 153, 0.055)),
+    rgba(20, 10, 16, 0.66);
+  -webkit-backdrop-filter: blur(20px) saturate(135%);
+  backdrop-filter: blur(20px) saturate(135%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(255, 0, 153, 0.1),
+    0 8px 22px rgba(0, 0, 0, 0.18);
+}
+.brand-logo-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  background: radial-gradient(circle at 26% 6%, rgba(255, 255, 255, 0.12), transparent 36%);
+  pointer-events: none;
+}
+.brand-logo-image {
+  position: relative;
+  z-index: 1;
   width: 32px;
-  height: 36px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 39px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: -4px;
-  transform: skew(-12deg);
-}
-.brand-symbol span {
-  color: var(--accent);
-}
-.brand img {
-  width: 34px;
-  height: 34px;
+  height: 32px;
   object-fit: contain;
+  transform: scale(1.34);
+  filter: saturate(1.08) contrast(1.04);
 }
 .navigation {
   display: flex;
@@ -1334,9 +1421,15 @@ input {
     font-size: 19px;
     gap: 9px;
   }
-  .brand-symbol {
-    font-size: 35px;
-    width: 26px;
+  .brand-logo-shell {
+    width: 38px;
+    height: 40px;
+    flex-basis: 38px;
+    border-radius: 11px;
+  }
+  .brand-logo-image {
+    width: 29px;
+    height: 29px;
   }
   .cart-button {
     padding: 8px 10px;
@@ -1563,4 +1656,11 @@ input {
     opacity: 1;
     transform: none;
   }
+}
+/* Loading feedback must remain visible even when the OS requests reduced motion. */
+body .loading-dots {
+  animation: loading-orbit 1.15s linear infinite !important;
+}
+body .skeleton-block::after {
+  animation: skeleton-sweep 1.35s ease-in-out infinite !important;
 }

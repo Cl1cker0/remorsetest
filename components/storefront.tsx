@@ -18,25 +18,30 @@ import {
 } from "@phosphor-icons/react";
 import Script from "next/script";
 import Link from "next/link";
+import Image from "next/image";
 import ScrollDirector from "./scroll-director";
 import MobileMenu from "./mobile-menu";
 import ProductDetail from "./product-detail";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
-  STORE_ID,
   imageUrl,
   productImage,
   price,
   maxQuantity,
+  isVariantAvailable,
+  firstAvailableVariant,
+  openSellAuthCheckout,
   publicProducts,
   type BasketItem,
   type Product,
   type Review,
   type Store,
   type Variant,
-} from "@/lib/komerza";
+} from "@/lib/sellauth";
 import SilkBackground from "./silk-background";
 import Reveal from "./reveal";
+
+const CART_STORAGE_KEY = "remorse-cart";
 
 function Arrow() {
   return (
@@ -45,16 +50,18 @@ function Arrow() {
     </span>
   );
 }
-function Brand({ store }: { store: Store | null }) {
+function Brand() {
   return (
     <a className="brand" href="/#top" aria-label="Remorse home">
-      {store?.branding?.iconFileName ? (
-        <img src={imageUrl(store.branding.iconFileName)} alt="" />
-      ) : (
-        <span className="brand-symbol">
-          r<span>.</span>
-        </span>
-      )}
+      <span className="brand-logo-shell" aria-hidden="true">
+        <Image
+          className="brand-logo-image"
+          src="/brand/remorse-symbol.png"
+          alt=""
+          width={32}
+          height={32}
+        />
+      </span>
       <span>
         remorse<span className="brand-domain">.dev</span>
       </span>
@@ -76,16 +83,14 @@ function ProductCard({
   const variants = [...product.variants].sort(
     (a, b) => (a.order ?? 0) - (b.order ?? 0),
   );
-  const [selected, setSelected] = useState(variants[0]?.id);
+  const [selected, setSelected] = useState(firstAvailableVariant(variants)?.id);
   const [imageIndex, setImageIndex] = useState(0);
   const [failed, setFailed] = useState(false);
-  const variant = variants.find((v) => v.id === selected) ?? variants[0];
+  const variant = variants.find((v) => v.id === selected) ?? firstAvailableVariant(variants);
   const images = variant?.imageNames?.length
     ? variant.imageNames
     : product.imageNames || [];
-  const available =
-    variant &&
-    maxQuantity(variant) >= Math.max(1, variant.minimumQuantity ?? 1);
+  const available = variant ? isVariantAvailable(variant) : false;
   return (
     <Reveal className="product-shell">
       <article
@@ -167,8 +172,9 @@ function ProductCard({
                 }}
               >
                 {variants.map((v) => (
-                  <option value={v.id} key={v.id}>
+                  <option value={v.id} key={v.id} disabled={!isVariantAvailable(v)}>
                     {v.name} · {price(v.cost, currency)}
+                    {isVariantAvailable(v) ? "" : " · Out of stock"}
                   </option>
                 ))}
               </select>
@@ -188,85 +194,78 @@ function ProductCard({
               disabled={!available || maintenance}
               onClick={() => variant && add(product, variant)}
             >
-              Add to cart{" "}
+              {available ? "Add to cart" : "Out of stock"}{" "}
               <span className="button-icon">
-                <Plus size={18} />
+                {available ? <Plus size={18} /> : null}
               </span>
             </button>
           </div>
-          <p className="purchase-note">
-            Delivered through Komerza after payment confirmation.
-          </p>
+          <p className="purchase-note">Delivery details are provided after payment confirmation.</p>
         </div>
       </article>
     </Reveal>
   );
 }
 
-function Reviews({ products, ready, unavailable }: { products: Product[]; ready: boolean; unavailable: boolean }) {
+function Reviews({
+  products,
+  ready,
+  unavailable,
+  onSettled,
+}: {
+  products: Product[];
+  ready: boolean;
+  unavailable: boolean;
+  onSettled?: () => void;
+}) {
   const [filter, setFilter] = useState("all");
-  const [reviews, setReviews] = useState<Review[]>([]);
+  const [allReviews, setAllReviews] = useState<Review[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
-  const pageCounts = useRef<Record<string, number>>({});
   const productKey = products.map((p) => p.id).join(",");
   useEffect(() => {
-    if (!ready || !window.komerza) return;
+    if (!ready) return;
     let current = true;
-    const client = window.komerza;
-    const ids = productKey
-      .split(",")
-      .filter(Boolean)
-      .filter((id) => filter === "all" || id === filter);
+    const params = new URLSearchParams();
+    if (filter !== "all") params.set("productId", filter);
     setLoading(true);
     setError("");
-    Promise.all(
-      ids.map(async (id) => {
-        if (page > 1 && page > (pageCounts.current[id] ?? Infinity))
-          return {
-            success: true,
-            data: [] as Review[],
-            pages: pageCounts.current[id],
-          };
-        const result = await client.getProductReviews(id, page);
-        if (current && result.success)
-          pageCounts.current[id] = result.pages ?? 0;
-        return result;
-      }),
-    )
-      .then((results) => {
+    fetch(`/api/feedbacks?${params.toString()}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Reviews could not be loaded.");
+        const data = (await response.json()) as { reviews?: Review[] };
         if (!current) return;
-        if (results.some((result) => !result.success))
-          throw new Error("Reviews could not be loaded.");
-        const next = results
-          .flatMap((r) => r.data || [])
-          .sort(
-            (a, b) => Date.parse(b.dateCreated) - Date.parse(a.dateCreated),
-          );
-        setReviews((previous) =>
-          page === 1
-            ? next
-            : [
-                ...new Map(
-                  [...previous, ...next].map((r) => [r.id, r]),
-                ).values(),
-              ],
+        const next = (data.reviews || []).sort(
+          (a, b) => Date.parse(b.dateCreated) - Date.parse(a.dateCreated),
         );
-        setHasMore(results.some((r) => (r.pages ?? 0) > page));
+        setAllReviews(next);
+        setHasMore(false);
       })
       .catch(() => {
         if (current) setError("Reviews could not be loaded. Please try again.");
       })
       .finally(() => {
-        if (current) setLoading(false);
+        if (current) {
+          setLoading(false);
+          onSettled?.();
+        }
       });
     return () => {
       current = false;
     };
-  }, [ready, productKey, filter, page, retry]);
+  }, [ready, productKey, filter, retry, onSettled]);
+  const reviews = allReviews.slice(0, page * 12);
+  if (!unavailable && loading && !allReviews.length && !error) {
+    return <section id="reviews" className="section reviews-section" role="status" aria-label="Loading reviews" aria-busy="true">
+      <div aria-hidden="true">
+        <div className="skeleton-block skeleton-review-heading" />
+        <div className="reviews-loading"><div className="skeleton-block" /><div className="skeleton-block" /></div>
+      </div>
+    </section>;
+  }
   return (
     <section id="reviews" className="section reviews-section">
       <Reveal>
@@ -286,7 +285,7 @@ function Reviews({ products, ready, unavailable }: { products: Product[]; ready:
             onChange={(e) => {
               setFilter(e.target.value);
               setPage(1);
-              setReviews([]);
+              setAllReviews([]);
             }}
           >
             <option value="all">All products</option>
@@ -310,12 +309,12 @@ function Reviews({ products, ready, unavailable }: { products: Product[]; ready:
         </div>
       ) : unavailable ? (
         <div className="state-panel" role="status"><p>Reviews are unavailable while the store is disconnected. Retry the store connection above.</p></div>
-      ) : loading && !reviews.length ? (
+      ) : loading && !allReviews.length ? (
         <div className="reviews-loading" aria-label="Loading reviews">
           <div />
           <div />
         </div>
-      ) : !reviews.length ? (
+      ) : !allReviews.length ? (
         <Reveal>
           <div className="review-empty">
             <div className="quote-emblem">
@@ -407,11 +406,11 @@ const faqs = [
   ],
   [
     "How will I receive my purchase?",
-    "Delivery is handled by Komerza after your payment is confirmed. Keep your checkout email and order confirmation so you can access your purchase.",
+    "Delivery details are provided after payment confirmation. Keep your checkout email and order confirmation so you can access your purchase.",
   ],
   [
     "Which payment methods can I use?",
-    "The payment methods enabled for your order appear at Komerza checkout. Availability can depend on the product and your region.",
+    "Available payment methods appear during checkout. Availability can depend on the product and your region.",
   ],
   [
     "Can I change my cart before paying?",
@@ -419,11 +418,49 @@ const faqs = [
   ],
   [
     "Where can I get help with an order?",
-    "Use the order link in your Komerza confirmation email to view your purchase and access the available support options. Always include your order ID when requesting help.",
+    "Use the order link in your confirmation email to view your purchase and access the available support options. Always include your order ID when requesting help.",
   ],
 ];
 
+function ProductSkeleton() {
+  return <section className="section detail-section" role="status" aria-label="Loading product" aria-busy="true">
+    <div className="detail-layout product-loading" aria-hidden="true">
+      <div><div className="skeleton-block skeleton-gallery" /><div className="skeleton-thumbs">{[0,1,2,3].map(i => <div className="skeleton-block" key={i} />)}</div></div>
+      <div className="skeleton-info"><div className="skeleton-block skeleton-title" /><div className="skeleton-block skeleton-line" /><div className="skeleton-block skeleton-price" /><div className="skeleton-options">{[0,1,2,3].map(i => <div className="skeleton-block" key={i} />)}</div><div className="skeleton-block skeleton-button" /></div>
+    </div>
+  </section>;
+}
+
+function readStoredCart(): BasketItem[] {
+  try {
+    const raw = localStorage.getItem(CART_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is BasketItem =>
+        item &&
+        typeof item.productId === "string" &&
+        typeof item.variantId === "string" &&
+        Number.isFinite(item.quantity) &&
+        item.quantity > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredCart(items: BasketItem[]) {
+  try {
+    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // Ignore quota / private mode failures.
+  }
+}
+
 export default function Storefront({productSlug}: {productSlug?: string}) {
+  const [reviewsSettled, setReviewsSettled] = useState(false);
+  const finishReviews = useCallback(() => setReviewsSettled(true), []);
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [detailError, setDetailError] = useState("");
   const [sdkReady, setSdkReady] = useState(false);
@@ -432,33 +469,53 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
     "loading",
   );
   const [error, setError] = useState("");
+  const homeLoading = !productSlug && (status === "loading" || (status === "ready" && !reviewsSettled));
+  useEffect(() => {
+    if (!homeLoading) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; };
+  }, [homeLoading]);
+  useEffect(() => {
+    if (status !== "loading") return;
+    const timer = setTimeout(() => {
+      setStatus("error");
+      setError("The store connection couldn’t load. Refresh the page to try again.");
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [status]);
   const [category, setCategory] = useState("all");
   const [cart, setCart] = useState<BasketItem[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [cartMessage, setCartMessage] = useState("");
   const [email, setEmail] = useState("");
-  const [coupon, setCoupon] = useState("");
   const [checkingOut, setCheckingOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   const dialog = useRef<HTMLDialogElement>(null);
-  const syncCart = useCallback(
-    () => setCart(window.komerza?.getBasket() || []),
-    [],
-  );
+  const syncCart = useCallback((next?: BasketItem[]) => {
+    const items = next ?? readStoredCart();
+    setCart(items);
+  }, []);
   const loadStore = useCallback(async () => {
-    if (!window.komerza) return;
     setStatus("loading");
+    setReviewsSettled(productSlug ? true : false);
+    setDetailProduct(null);
+    setDetailError("");
     setError("");
     try {
-      window.komerza.init(STORE_ID);
-      const response = await window.komerza.getStore();
-      if (!response.success || !response.data)
-        throw new Error(response.message || "The store could not be loaded.");
-      setStore(response.data);
+      const response = await fetch("/api/store", { cache: "no-store" });
+      if (!response.ok) throw new Error("The store could not be loaded.");
+      const data = (await response.json()) as Store;
+      if (!data || !Array.isArray(data.products))
+        throw new Error("The store could not be loaded.");
+      setStore(data);
       if (productSlug) {
-        const detail = await window.komerza.getProduct(productSlug);
-        if (detail.success && detail.data && detail.data.visibility !== 2) setDetailProduct(detail.data);
+        const products = publicProducts(data);
+        const detail =
+          products.find((p) => p.slug === productSlug) ||
+          products.find((p) => p.id === productSlug);
+        if (detail) setDetailProduct(detail);
         else setDetailError("This product is unavailable.");
       }
       setStatus("ready");
@@ -467,13 +524,17 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
       setError("We couldn’t connect to the store. Please try again.");
       setStatus("error");
     }
-  }, [syncCart, productSlug]);
+  }, [productSlug, syncCart]);
   useEffect(() => {
-    if (sdkReady) void loadStore();
-  }, [sdkReady, loadStore]);
+    void loadStore();
+  }, [loadStore]);
   useEffect(() => {
-    window.addEventListener("storage", syncCart);
-    return () => window.removeEventListener("storage", syncCart);
+    setCart(readStoredCart());
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === CART_STORAGE_KEY) syncCart();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [syncCart]);
   useEffect(() => {
     const element = dialog.current;
@@ -525,28 +586,45 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
     setCartOpen(true);
   }
   function add(product: Product, variant: Variant, requestedQuantity?: number) {
-    const client = window.komerza;
-    if (!client) return;
     const quantity = requestedQuantity ?? Math.max(1, variant.minimumQuantity ?? 1);
+    const current = readStoredCart();
     const existing =
-      client
-        .getBasket()
-        .find((i) => i.productId === product.id && i.variantId === variant.id)
-        ?.quantity || 0;
+      current.find(
+        (i) => i.productId === product.id && i.variantId === variant.id,
+      )?.quantity || 0;
     if (existing + quantity > maxQuantity(variant)) {
       setCartMessage(
         "You’ve reached the available quantity for this option. Adjust your cart below.",
       );
+      syncCart(current);
       openCart();
       return;
     }
-    client.addToBasket(product.id, variant.id, quantity);
+    const next = existing
+      ? current.map((i) =>
+          i.productId === product.id && i.variantId === variant.id
+            ? { ...i, quantity: i.quantity + quantity }
+            : i,
+        )
+      : [
+          ...current,
+          {
+            productId: product.id,
+            variantId: variant.id,
+            quantity,
+          },
+        ];
+    writeStoredCart(next);
+    syncCart(next);
     setCartMessage(`${product.name} added to your cart.`);
     openCart();
   }
   function remove(item: BasketItem) {
-    window.komerza?.removeFromBasket(item.productId, item.variantId);
-    syncCart();
+    const next = readStoredCart().filter(
+      (i) => !(i.productId === item.productId && i.variantId === item.variantId),
+    );
+    writeStoredCart(next);
+    syncCart(next);
     setCartMessage("Item removed.");
   }
   function changeQuantity(
@@ -559,56 +637,61 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
       (quantity > maxQuantity(variant) && quantity >= item.quantity)
     )
       return;
-    window.komerza?.removeFromBasket(item.productId, item.variantId);
-    window.komerza?.addToBasket(item.productId, item.variantId, quantity);
-    syncCart();
+    const next = readStoredCart().map((i) =>
+      i.productId === item.productId && i.variantId === item.variantId
+        ? { ...i, quantity }
+        : i,
+    );
+    writeStoredCart(next);
+    syncCart(next);
     setCartMessage("");
   }
-  async function checkout() {
-    if (!window.komerza || cartInvalid || !cart.length || maintenance) return;
+  function checkout() {
+    if (cartInvalid || !cart.length || maintenance) return;
     setCheckingOut(true);
     setCartMessage("");
-    // Release the dialog top layer for Komerza's verification overlay.
+    // Release the dialog top layer for the SellAuth modal.
     dialog.current?.close();
-    try {
-      const response = await window.komerza.checkout(
-        email.trim(),
-        coupon.trim() || undefined,
-      );
-      if (!response.success) {
-        dialog.current?.showModal();
-        setCartMessage(
-          response.message || "Checkout couldn’t start. Please try again.",
-        );
-      }
-    } catch {
+    setCartOpen(false);
+    const opened = openSellAuthCheckout({
+      cart,
+      email: email.trim() || undefined,
+      theme: "dark",
+    });
+    if (!opened) {
       dialog.current?.showModal();
-      setCartMessage("Checkout couldn’t start. Please try again.");
-    } finally {
-      setCheckingOut(false);
+      setCartOpen(true);
+      setCartMessage(
+        sdkReady
+          ? "Checkout couldn’t start. Please try again."
+          : "Checkout is still loading. Try again in a moment.",
+      );
+    } else {
+      setCartMessage("");
     }
+    setCheckingOut(false);
   }
   return (
     <>
       <SilkBackground enabled />
-      <ScrollDirector ready={status === "ready"} detail={Boolean(productSlug)} enabled />
+      <ScrollDirector ready={status === "ready" && !homeLoading} detail={Boolean(productSlug)} enabled />
       <div className="ambient-shade" aria-hidden="true" />
       <a className="skip-link" href={productSlug ? "#product-detail" : "#products"}>
         Skip to products
       </a>
       <Script
-        src="https://cdn.komerza.com/komerza.min.js"
+        src="https://static.sellauth.com/embed/v3.min.js"
         strategy="afterInteractive"
         onReady={() => setSdkReady(true)}
         onError={() => {
-          setStatus("error");
-          setError(
-            "The store connection couldn’t load. Refresh the page to try again.",
-          );
+          // Store browsing still works; checkout reports when the embed is missing.
+          setSdkReady(false);
         }}
       />
+      {homeLoading && <div className="store-loading" role="status" aria-label="Loading store" aria-busy="true"><div className="loading-dots" aria-hidden="true">{Array.from({length: 24}, (_, i) => <i key={i} style={{"--dot-index": i, opacity: Math.max(.12, 1 - i * .07)} as CSSProperties} />)}</div></div>}
+      <div className="store-content" inert={homeLoading} style={homeLoading ? {visibility: "hidden"} : undefined}>
       <header className="site-header">
-        <Brand store={store} />
+        <Brand />
         <nav
           className="navigation"
           aria-label="Main navigation"
@@ -647,7 +730,7 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
       </header>
       <MobileMenu open={menuOpen} close={closeMenu}/>
       <main id={productSlug ? "product-detail" : undefined}>
-        {productSlug ? <>{detailProduct ? <ProductDetail product={detailProduct} currency={currency} add={add} maintenance={maintenance}/> : <section className="section detail-section"><div className="state-panel"><h1>{detailError || (status === "error" ? error : "Loading product…")}</h1><Link href="/#products">Back to products</Link></div></section>}<Reviews products={detailProduct ? [detailProduct] : []} ready={status === "ready"} unavailable={status === "error"}/></> : <>
+        {productSlug ? <>{detailProduct ? <ProductDetail product={detailProduct} currency={currency} add={add} maintenance={maintenance}/> : detailError || status === "error" ? <section className="section detail-section"><div className="state-panel"><h1>{detailError || error}</h1><Link href="/#products">Back to products</Link></div></section> : <ProductSkeleton />}<Reviews products={detailProduct ? [detailProduct] : []} ready={status === "ready"} unavailable={status === "error"}/></> : <>
         <section className="hero section" id="top">
           <div className="hero-content">
             <span className="hero-label">
@@ -682,7 +765,6 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
         <section className="section products-section" id="products">
           <Reveal>
             <div className="section-heading">
-              <span className="section-kicker">THE COLLECTION</span>
               <h2>
                 Your next <span>advantage.</span>
               </h2>
@@ -725,9 +807,7 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
               <p>{error}</p>
               <button
                 className="text-button"
-                onClick={() =>
-                  sdkReady ? loadStore() : window.location.reload()
-                }
+                onClick={() => loadStore()}
               >
                 Try again <ArrowRight />
               </button>
@@ -775,15 +855,10 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
                   </span>
                 </div>
                 <div className="feature-copy">
-                  <span className="feature-number">01 / ACCESS</span>
-                  <h3>
-                    From checkout
-                    <br />
-                    to your next session.
-                  </h3>
+                  <h3>Instant access.</h3>
                   <p>
-                    Your digital purchase is delivered through Komerza once
-                    payment is confirmed. One order. Everything in one place.
+                    Your key is sent immediately after purchase, so you can get
+                    set up without waiting.
                   </p>
                 </div>
               </article>
@@ -795,11 +870,10 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
                     <Fingerprint size={30} weight="light" />
                   </span>
                   <div>
-                    <span className="feature-number">02 / CONFIDENCE</span>
-                    <h3>A checkout you can trust.</h3>
+                    <h3>Built for players.</h3>
                     <p>
-                      Payment stays with Komerza’s secure checkout, with an
-                      order confirmation you can return to.
+                      Every product is chosen for players who want a focused,
+                      dependable experience.
                     </p>
                   </div>
                   <ArrowUpRight className="feature-corner" size={20} />
@@ -811,11 +885,10 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
                     <Bag size={30} weight="light" />
                   </span>
                   <div>
-                    <span className="feature-number">03 / CLARITY</span>
-                    <h3>Know what you’re getting.</h3>
+                    <h3>Trusted by the community.</h3>
                     <p>
-                      Current prices. Real availability. Your chosen option,
-                      clearly shown before you pay.
+                      Read real customer feedback from players before you make
+                      your choice.
                     </p>
                   </div>
                   <ArrowUpRight className="feature-corner" size={20} />
@@ -824,7 +897,7 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
             </div>
           </div>
         </section>
-        <Reviews products={products} ready={status === "ready"} unavailable={status === "error"} />
+        <Reviews products={products} ready={status === "ready"} unavailable={status === "error"} onSettled={finishReviews} />
         <section className="section faq-section" id="faq">
           <Reveal className="faq-intro">
             <span className="section-kicker">GOOD TO KNOW</span>
@@ -854,7 +927,6 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
         </section>
         <section className="section final-cta">
           <Reveal>
-            <span className="section-kicker">YOUR NEXT MOVE</span>
             <h2>
               Make it <span>Remorse.</span>
             </h2>
@@ -867,7 +939,7 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
       </main>
       <footer className="section footer">
         <div className="footer-top">
-          <Brand store={store} />
+          <Brand />
           <p>Your game. Your way.</p>
           <a href={productSlug ? "#product-detail" : "#top"} className="back-top">
             Back to top <ArrowUpRight size={18} />
@@ -879,10 +951,10 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
             <a href="/#products">Products</a>
             <a href="/#reviews">Reviews</a>
             <a href="/#faq">Help & FAQ</a>
+            <a href="/terms">Terms</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/refunds">Refunds</a>
           </nav>
-          <a href="https://komerza.com" target="_blank" rel="noreferrer">
-            Commerce by Komerza <ArrowUpRight size={13} />
-          </a>
         </div>
       </footer>
       {checkingOut && (
@@ -1006,7 +1078,7 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
               className="cart-checkout"
               onSubmit={(event) => {
                 event.preventDefault();
-                void checkout();
+                checkout();
               }}
             >
               <div className="subtotal">
@@ -1030,23 +1102,13 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
-              <details className="coupon-details">
-                <summary>Have a discount code?</summary>
-                <label htmlFor="coupon">Discount code</label>
-                <input
-                  id="coupon"
-                  value={coupon}
-                  onChange={(e) => setCoupon(e.target.value)}
-                  placeholder="Enter code"
-                />
-              </details>
               {cartMessage && (
                 <p className="cart-message" role="status">
                   {cartMessage}
                 </p>
               )}
               <div className="checkout-actions">
-              <button type="button" className="clear-cart-button" aria-label="Clear cart" onClick={() => cart.forEach((item) => remove(item))}><Trash size={20} /></button>
+              <button type="button" className="clear-cart-button" aria-label="Clear cart" onClick={() => { writeStoredCart([]); syncCart([]); setCartMessage("Cart cleared."); }}><Trash size={20} /></button>
               <button
                 className="primary-button checkout-button"
                 disabled={checkingOut || cartInvalid || maintenance}
@@ -1057,12 +1119,13 @@ export default function Storefront({productSlug}: {productSlug?: string}) {
               </button>
               </div>
               <small>
-                <ShieldCheck size={14} /> Secure payment through Komerza
+                <ShieldCheck size={14} /> Secure payment
               </small>
             </form>
           )}
         </div>
       </dialog>
+      </div>
     </>
   );
 }
